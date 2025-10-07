@@ -357,7 +357,7 @@ async def optimize_loading(request: OptimizationRequest):
                     box_volume = box_config.external_length_mm * box_config.external_width_mm * box_config.external_height_mm
                     max_by_volume = int(truck_volume / box_volume * VOLUME_FILL_FACTOR) if box_volume > 0 else 0
                     max_by_weight = int(truck.payload_kg / box_config.max_payload_kg) if box_config.max_payload_kg > 0 else 0
-                    quantity = min(max_by_volume, max_by_weight, 1000)
+                    quantity = min(max_by_volume, max_by_weight, 1500)
                 else:
                     quantity = box_config.quantity
                 for _ in range(quantity):
