@@ -12,6 +12,8 @@ from enum import Enum
 import itertools
 import time
 import logging
+import os # NEW: For environment variables
+import openrouteservice # NEW: For distance calculation
 
 # ==================== Tunable Fill Factor ====================
 VOLUME_FILL_FACTOR = 1  # Adjust this later to control how tightly the truck is filled
@@ -31,24 +33,78 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ==================== ORS Configuration and Client Setup ====================
+# Set the ORS API key via an environment variable for security:
+# e.g., export ORS_API_KEY='your_ors_basic_key_here'
+ORS_API_KEY = os.environ.get("ORS_API_KEY") 
+ORS_CLIENT = None
+CITY_COORDINATE_CACHE: Dict[str, Tuple[float, float]] = {} # Cache for geocoding results
+
+if ORS_API_KEY:
+    try:
+        ORS_CLIENT = openrouteservice.Client(key=ORS_API_KEY)
+        logger.info("OpenRouteService client initialized successfully.")
+    except Exception as e:
+        logger.error(f"Failed to initialize ORS client: {e}")
+else:
+    logger.warning("ORS_API_KEY not found. Cost estimation based on distance will not work.")
+
+# ==================== ORS Utility Functions ====================
+
+def get_city_coordinates(city_name: str) -> Optional[Tuple[float, float]]:
+    """Converts a city name to [lon, lat] coordinates using ORS Geocoding API."""
+    if city_name in CITY_COORDINATE_CACHE:
+        return CITY_COORDINATE_CACHE[city_name]
+
+    if not ORS_CLIENT:
+        return None
+
+    try:
+        # Use a search query, focusing on India
+        geocode_result = ORS_CLIENT.geocode(text=city_name, boundary_country='IN', limit=1)
+        
+        if geocode_result and geocode_result.get('features'):
+            # ORS returns coordinates as [lon, lat]
+            lon, lat = geocode_result['features'][0]['geometry']['coordinates']
+            
+            CITY_COORDINATE_CACHE[city_name] = (lon, lat)
+            logger.info(f"Geocoded {city_name} to ({lon}, {lat})")
+            return lon, lat
+        
+        logger.warning(f"Could not find coordinates for city: {city_name}")
+        return None
+    except Exception as e:
+        logger.error(f"Geocoding API failed for {city_name}: {e}")
+        return None
+
+def calculate_ors_distance_km(source_city: str, destination_city: str) -> Optional[float]:
+    """Calculates road distance between two cities using ORS Directions API."""
+    src_coords = get_city_coordinates(source_city)
+    dest_coords = get_city_coordinates(destination_city)
+
+    if not src_coords or not dest_coords or not ORS_CLIENT:
+        return None
+
+    try:
+        route = ORS_CLIENT.directions(
+            coordinates=[src_coords, dest_coords], 
+            profile='driving-car',
+            units='km' # Request distance in kilometers
+        )
+        
+        # Check for a valid route and distance
+        if route and route.get('routes'):
+            distance_km = route['routes'][0]['summary']['distance']
+            return distance_km
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"ORS Directions API failed for {source_city} to {destination_city}: {e}")
+        return None
+
 # ==================== Shipment & Cost Data ====================
-CITY_DISTANCES_KM = {
-    frozenset(("Mumbai", "Delhi")): 1420,
-    frozenset(("Mumbai", "Bangalore")): 985,
-    frozenset(("Mumbai", "Kolkata")): 1940,
-    frozenset(("Mumbai", "Chennai")): 1335,
-    frozenset(("Mumbai", "Hyderabad")): 710,
-    frozenset(("Delhi", "Bangalore")): 2150,
-    frozenset(("Delhi", "Kolkata")): 1530,
-    frozenset(("Delhi", "Chennai")): 2210,
-    frozenset(("Delhi", "Hyderabad")): 1580,
-    frozenset(("Bangalore", "Kolkata")): 1870,                  
-    frozenset(("Bangalore", "Chennai")): 350,
-    frozenset(("Bangalore", "Hyderabad")): 570,
-    frozenset(("Kolkata", "Chennai")): 1670,
-    frozenset(("Kolkata", "Hyderabad")): 1480,
-    frozenset(("Chennai", "Hyderabad")): 630,
-}
+# REMOVED: CITY_DISTANCES_KM - Replaced by ORS API
 
 COST_MODEL = {
     "22 ft Truck": {"base_rate": 4000, "rate_per_km": 55},
@@ -58,10 +114,11 @@ COST_MODEL = {
 
 # ==================== Data Models ====================
 class BoxInput(BaseModel):
+# ... (Data Models remain unchanged)
     box_type: str
-    external_length_mm: Optional[float] = Field(None)
-    external_width_mm: Optional[float] = Field(None)
-    external_height_mm: Optional[float] = Field(None)
+    external_length_mm: float 
+    external_width_mm: float
+    external_height_mm: float
     max_payload_kg: float
     quantity: Optional[int] = None
 
@@ -117,6 +174,7 @@ class TruckResult(BaseModel):
 
 # ==================== Performance Grading ====================
 def calculate_performance_grade(utilization: float) -> PerformanceGrade:
+# ... (remains unchanged)
     """Grade the packing performance based on industry standards"""
     if utilization >= 95:
         return PerformanceGrade(
@@ -155,6 +213,7 @@ def calculate_performance_grade(utilization: float) -> PerformanceGrade:
         )
 
 def determine_limiting_factor(volume_util: float, weight_util: float) -> str:
+# ... (remains unchanged)
     """Determine what's limiting the packing"""
     diff = abs(volume_util - weight_util)
     
@@ -168,6 +227,7 @@ def determine_limiting_factor(volume_util: float, weight_util: float) -> str:
 # ==================== Core Optimization Engine ====================
 @dataclass
 class Box:
+# ... (Box class remains unchanged)
     type: str
     length: float
     width: float
@@ -196,6 +256,7 @@ class Box:
 
 @dataclass
 class Placement:
+# ... (Placement class remains unchanged)
     box: Box
     x: float
     y: float
@@ -221,6 +282,7 @@ class Placement:
         )
 
 class Space:
+# ... (Space class remains unchanged)
     def __init__(self, x, y, z, length, width, height):
         self.x, self.y, self.z = x, y, z
         self.length, self.width, self.height = length, width, height
@@ -271,6 +333,7 @@ class Space:
         return [s for s in new_spaces if s.volume >= MIN_VOLUME]
 
 class TruckPacker:
+# ... (TruckPacker class remains unchanged)
     def __init__(self, truck_length, truck_width, truck_height, max_weight):
         self.truck_length, self.truck_width, self.truck_height = truck_length, truck_width, truck_height
         self.max_weight = max_weight
@@ -466,13 +529,23 @@ async def optimize_loading(request: OptimizationRequest):
             logger.info(f"Optimizing for truck: {truck.name}")
             
             calculated_cost = None
+            
+            # --- UPDATED DISTANCE CALCULATION BLOCK ---
             if request.source_city and request.destination_city and request.source_city != request.destination_city:
-                distance_key = frozenset((request.source_city, request.destination_city))
-                distance = CITY_DISTANCES_KM.get(distance_key)
-                cost_params = COST_MODEL.get(truck.name)
-                if distance and cost_params:
-                    calculated_cost = cost_params["base_rate"] + (distance * cost_params["rate_per_km"])
-                    logger.info(f"Cost for {truck.name}: INR {calculated_cost:.2f}")
+                
+                distance_km = calculate_ors_distance_km(request.source_city, request.destination_city)
+                
+                if distance_km is not None:
+                    cost_params = COST_MODEL.get(truck.name)
+                    if cost_params:
+                        # Use the dynamically calculated distance
+                        calculated_cost = cost_params["base_rate"] + (distance_km * cost_params["rate_per_km"])
+                        logger.info(f"Calculated distance: {distance_km:.2f} km. Cost for {truck.name}: INR {calculated_cost:.2f}")
+                    else:
+                        logger.warning(f"Cost model for truck '{truck.name}' not found.")
+                else:
+                    logger.warning(f"Failed to calculate distance for {request.source_city} to {request.destination_city}. Check ORS_API_KEY and city names.")
+            # --- END OF UPDATED BLOCK ---
 
             MAX_TOTAL_BOXES_TO_PROCESS = 10000
             all_boxes = []
@@ -530,7 +603,7 @@ async def optimize_loading(request: OptimizationRequest):
                 unfitted_counts[box.type] = unfitted_counts.get(box.type, 0) + 1
             
             for box_config, total_quantity in box_quantities:
-                packed_count = box_counts.get(box_config.box_type, 0)
+                packed_count = box_counts.get(box_config.box.type, 0)
                 unfitted_from_packer = unfitted_counts.get(box_config.box_type, 0)
                 processed_count = packed_count + unfitted_from_packer
                 
@@ -604,14 +677,15 @@ async def health_check():
 async def root():
     return {
         "name": "3D Truck Loading Optimization API",
-        "version": "1.3.0",
-        "features": ["3D Bin Packing", "Cost Estimation", "Gravity-Aware Placement", "Enhanced Small Box Support", "Performance Grading"],
+        "version": "1.3.1",
+        "features": ["3D Bin Packing", "Dynamic Cost Estimation (ORS)", "Gravity-Aware Placement", "Enhanced Small Box Support", "Performance Grading"],
         "endpoints": {"optimize": "/api/optimize", "health": "/api/health", "docs": "/docs"}
     }
 
 if __name__ == "__main__":
     import uvicorn
     print("Starting Real-World 3D Truck Optimization Server...")
+    print("!!! WARNING: Ensure the ORS_API_KEY environment variable is set for distance calculation.")
     print("API will be available at http://localhost:8000")
     print("Documentation at http://localhost:8000/docs")
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
