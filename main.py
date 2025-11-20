@@ -603,7 +603,7 @@ async def optimize_loading(request: OptimizationRequest):
                 unfitted_counts[box.type] = unfitted_counts.get(box.type, 0) + 1
             
             for box_config, total_quantity in box_quantities:
-                packed_count = box_counts.get(box_config.box.type, 0)
+                packed_count = box_counts.get(box_config.type, 0)
                 unfitted_from_packer = unfitted_counts.get(box_config.box_type, 0)
                 processed_count = packed_count + unfitted_from_packer
                 
