@@ -1,4 +1,4 @@
 fastapi
 uvicorn[standard]
 numpy
-pydantic
+openrouteservice
